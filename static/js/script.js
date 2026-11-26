@@ -1,7 +1,6 @@
 (() => {
     "use strict";
 
-    // Cityscapes class RGB colors matching app.py
     const CITYSCAPES_COLORS = {
         "Road": "rgb(128, 64, 128)",
         "Sidewalk": "rgb(244, 35, 232)",
@@ -29,6 +28,12 @@
         deeplab: "DeepLabV3+"
     };
 
+    const MODE_HINTS = {
+        high: "High Quality analyzes every frame for maximum temporal precision.",
+        balanced: "Balanced analyzes every 3rd frame and reuses recent masks on intermediate frames without inflating stats.",
+        fast: "Fast analyzes every 5th frame for maximum speed while preserving original video duration."
+    };
+
     const IMAGE_EXTS = new Set(["jpg", "jpeg", "png"]);
     const VIDEO_EXTS = new Set(["mp4", "avi", "mov"]);
 
@@ -37,14 +42,21 @@
     let previewUrl = null;
     let classChart = null;
     let isRunning = false;
+    let activeJobId = null;
+    let pollTimer = null;
 
     const el = {
+        deviceBadge: document.getElementById("deviceBadge"),
         noticeBar: document.getElementById("noticeBar"),
         noticeText: document.getElementById("noticeText"),
         noticeClose: document.getElementById("noticeClose"),
 
         modelSelect: document.getElementById("modelSelect"),
+        modelRecommendation: document.getElementById("modelRecommendation"),
         yoloToggle: document.getElementById("yoloToggle"),
+        videoModeSelect: document.getElementById("videoModeSelect"),
+        videoModeHint: document.getElementById("videoModeHint"),
+
         uploadArea: document.getElementById("uploadArea"),
         fileInput: document.getElementById("fileInput"),
         uploadButton: document.getElementById("uploadButton"),
@@ -54,7 +66,18 @@
         fileChosen: document.getElementById("fileChosen"),
         fileName: document.getElementById("fileName"),
         fileMeta: document.getElementById("fileMeta"),
+
         analyzeButton: document.getElementById("analyzeButton"),
+        cancelButton: document.getElementById("cancelButton"),
+
+        videoProgressPanel: document.getElementById("videoProgressPanel"),
+        progressStatusLabel: document.getElementById("progressStatusLabel"),
+        progressPercent: document.getElementById("progressPercent"),
+        progressBar: document.getElementById("progressBar"),
+        progressFrames: document.getElementById("progressFrames"),
+        progressFps: document.getElementById("progressFps"),
+        progressElapsed: document.getElementById("progressElapsed"),
+        progressEta: document.getElementById("progressEta"),
 
         resultMeta: document.getElementById("resultMeta"),
         imageResultsGrid: document.getElementById("imageResultsGrid"),
@@ -67,15 +90,67 @@
         downloadVideoLink: document.getElementById("downloadVideoLink"),
         videoCodecNotice: document.getElementById("videoCodecNotice"),
 
+        summaryScopeNote: document.getElementById("summaryScopeNote"),
         totalLabel: document.getElementById("totalLabel"),
         totalObjects: document.getElementById("totalObjects"),
+        totalSub: document.getElementById("totalSub"),
         carCount: document.getElementById("carCount"),
+        carSub: document.getElementById("carSub"),
         personCount: document.getElementById("personCount"),
+        personSub: document.getElementById("personSub"),
         processingTime: document.getElementById("processingTime"),
+        processingSub: document.getElementById("processingSub"),
+
+        videoFrameBreakdown: document.getElementById("videoFrameBreakdown"),
+        breakdownTotal: document.getElementById("breakdownTotal"),
+        breakdownAnalyzed: document.getElementById("breakdownAnalyzed"),
+        breakdownReused: document.getElementById("breakdownReused"),
+        breakdownSpeed: document.getElementById("breakdownSpeed"),
+
         detectedTags: document.getElementById("detectedTags"),
+        chartTitle: document.getElementById("chartTitle"),
         classChart: document.getElementById("classChart"),
         chartEmpty: document.getElementById("chartEmpty")
     };
+
+    // --------------------------------------------------
+    // Load Hardware Info & Recommended Model
+    // --------------------------------------------------
+
+    async function loadSystemInfo() {
+        try {
+            const resp = await fetch("/api/system-info");
+            if (!resp.ok) throw new Error("Unable to fetch system info");
+            const info = await resp.json();
+
+            if (info.device === "GPU") {
+                const shortName = (info.device_name || "CUDA GPU").replace("NVIDIA GeForce ", "");
+                el.deviceBadge.textContent = `GPU · ${shortName}`;
+            } else {
+                el.deviceBadge.textContent = "CPU Fallback";
+            }
+
+            const rec = info.recommended_video_model || "unet";
+            const unetOpt = el.modelSelect.querySelector('option[value="unet"]');
+            const dlOpt = el.modelSelect.querySelector('option[value="deeplab"]');
+            if (unetOpt) {
+                unetOpt.textContent = rec === "unet" ? "U-Net (Recommended)" : "U-Net";
+            }
+            if (dlOpt) {
+                dlOpt.textContent = rec === "deeplab" ? "DeepLabV3+ (Recommended)" : "DeepLabV3+";
+            }
+            el.modelSelect.value = rec;
+            if (info.recommended_reason) {
+                el.modelRecommendation.textContent = `Recommended (${MODEL_NAMES[rec]}): ${info.recommended_reason}`;
+            }
+        } catch (err) {
+            el.deviceBadge.textContent = "Local Runtime";
+        }
+    }
+
+    // --------------------------------------------------
+    // Helpers
+    // --------------------------------------------------
 
     function showNotice(text, isError = false) {
         el.noticeText.textContent = text;
@@ -109,6 +184,14 @@
         return `${(bytes / Math.pow(1024, i)).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
     }
 
+    function formatSeconds(sec) {
+        if (sec === null || sec === undefined || !Number.isFinite(sec)) return "--";
+        if (sec < 60) return `${sec.toFixed(1)}s`;
+        const mins = Math.floor(sec / 60);
+        const rem = (sec % 60).toFixed(0).padStart(2, "0");
+        return `${mins}m ${rem}s`;
+    }
+
     function getCount(counts, target) {
         if (!counts) return 0;
         const lower = target.toLowerCase();
@@ -124,6 +207,14 @@
         span.textContent = text;
         return span;
     }
+
+    // --------------------------------------------------
+    // Controls & File Handling
+    // --------------------------------------------------
+
+    el.videoModeSelect.addEventListener("change", () => {
+        el.videoModeHint.textContent = MODE_HINTS[el.videoModeSelect.value] || "";
+    });
 
     function clearSelectedFile() {
         if (previewUrl) {
@@ -156,7 +247,7 @@
         el.fileChosen.classList.remove("hidden");
         el.fileName.textContent = file.name;
         el.fileMeta.textContent = `${kind === "video" ? "Video" : "Image"} · ${formatSize(file.size)}`;
-        el.analyzeButton.disabled = false;
+        el.analyzeButton.disabled = isRunning;
         el.resultMeta.textContent = "";
 
         if (kind === "image") {
@@ -199,22 +290,22 @@
 
     el.changeFileButton.addEventListener("click", (e) => {
         e.stopPropagation();
-        el.fileInput.click();
+        if (!isRunning) el.fileInput.click();
     });
 
     el.clearFileButton.addEventListener("click", (e) => {
         e.stopPropagation();
-        clearSelectedFile();
+        if (!isRunning) clearSelectedFile();
     });
 
     el.uploadArea.addEventListener("click", (e) => {
-        if (!selectedFile && !e.target.closest("button")) {
+        if (!selectedFile && !isRunning && !e.target.closest("button")) {
             el.fileInput.click();
         }
     });
 
     el.uploadArea.addEventListener("keydown", (e) => {
-        if ((e.key === "Enter" || e.key === " ") && !selectedFile) {
+        if ((e.key === "Enter" || e.key === " ") && !selectedFile && !isRunning) {
             e.preventDefault();
             el.fileInput.click();
         }
@@ -226,7 +317,7 @@
 
     el.uploadArea.addEventListener("dragover", (e) => {
         e.preventDefault();
-        el.uploadArea.classList.add("dragging");
+        if (!isRunning) el.uploadArea.classList.add("dragging");
     });
 
     el.uploadArea.addEventListener("dragleave", () => {
@@ -236,6 +327,7 @@
     el.uploadArea.addEventListener("drop", (e) => {
         e.preventDefault();
         el.uploadArea.classList.remove("dragging");
+        if (isRunning) return;
         const file = e.dataTransfer.files[0];
         if (file) {
             try {
@@ -246,6 +338,10 @@
     });
 
     el.noticeClose.addEventListener("click", hideNotice);
+
+    // --------------------------------------------------
+    // Charts & Summary Rendering
+    // --------------------------------------------------
 
     function renderDetectedTags(counts, useYolo) {
         el.detectedTags.innerHTML = "";
@@ -275,7 +371,7 @@
         }
     }
 
-    function renderClassChart(distribution) {
+    function renderClassChart(distribution, isVideo = false) {
         if (classChart) {
             classChart.destroy();
             classChart = null;
@@ -284,18 +380,16 @@
         const chartBox = el.classChart.parentElement;
 
         if (!Array.isArray(distribution) || distribution.length === 0) {
-            if (chartBox) {
-                chartBox.style.height = "260px";
-            }
+            if (chartBox) chartBox.style.height = "260px";
             el.chartEmpty.classList.remove("hidden");
-            el.chartEmpty.textContent =
-                selectedKind === "video"
-                    ? "Class percentages are generated for single-image analysis."
-                    : "Run an image analysis to view semantic class percentages.";
+            el.chartEmpty.textContent = "Run an analysis to view semantic class percentages.";
             return;
         }
 
         el.chartEmpty.classList.add("hidden");
+        el.chartTitle.textContent = isVideo
+            ? "Class Coverage (Averaged Across Analyzed Frames Only)"
+            : "Class Coverage";
 
         if (typeof Chart === "undefined") return;
 
@@ -355,6 +449,201 @@
         });
     }
 
+    function renderVideoCompleted(data, useYolo) {
+        const modelLabel = MODEL_NAMES[data.model] || data.model;
+        el.imageResultsGrid.classList.add("hidden");
+        el.videoResultsGrid.classList.remove("hidden");
+        el.videoCodecNotice.classList.add("hidden");
+
+        el.resultMeta.textContent =
+            `${modelLabel} · ${data.mode_label} · ${data.device} · ${data.analyzed_frames}/${data.frames_processed} analyzed`;
+
+        el.videoOutputPreview.innerHTML = "";
+        const outVideo = document.createElement("video");
+        outVideo.src = data.video;
+        outVideo.controls = true;
+        outVideo.playsInline = true;
+        outVideo.addEventListener("error", () => {
+            el.videoCodecNotice.classList.remove("hidden");
+        });
+        el.videoOutputPreview.appendChild(outVideo);
+
+        el.downloadVideoLink.href = data.video;
+        el.downloadVideoLink.classList.remove("hidden");
+
+        const counts = data.detection_counts || {};
+        el.summaryScopeNote.textContent =
+            data.reused_frames > 0
+                ? `Metrics computed strictly from ${data.analyzed_frames} analyzed frames (not inflated by ${data.reused_frames} reused frames).`
+                : `Computed across all ${data.analyzed_frames} frames.`;
+
+        el.totalLabel.textContent = "Analyzed Detections";
+        el.totalObjects.textContent = useYolo ? String(data.total_detections ?? 0) : "Off";
+        el.totalSub.textContent = useYolo
+            ? `Avg ${data.avg_detections_per_analyzed_frame ?? 0} / analyzed frame`
+            : "YOLOv8 disabled";
+
+        el.carCount.textContent = useYolo ? String(getCount(counts, "car")) : "--";
+        el.carSub.textContent = useYolo ? "Across analyzed frames" : "";
+
+        el.personCount.textContent = useYolo ? String(getCount(counts, "person")) : "--";
+        el.personSub.textContent = useYolo ? "Across analyzed frames" : "";
+
+        el.processingTime.textContent = `${data.processing_time} s`;
+        el.processingSub.textContent = `${data.device} · ${data.processing_fps} FPS`;
+
+        el.videoFrameBreakdown.classList.remove("hidden");
+        el.breakdownTotal.textContent = `Total Frames: ${data.frames_processed} (${data.duration_seconds}s @ ${data.original_fps} fps)`;
+        el.breakdownAnalyzed.textContent = `Analyzed Frames: ${data.analyzed_frames}`;
+        el.breakdownReused.textContent = `Reused Predictions: ${data.reused_frames}`;
+        el.breakdownSpeed.textContent = `Throughput: ${data.processing_fps} FPS`;
+
+        renderDetectedTags(counts, useYolo);
+        renderClassChart(data.class_distribution || [], true);
+        showNotice(
+            `Finished ${data.mode_label} video analysis with ${modelLabel} on ${data.device} in ${data.processing_time}s (${data.processing_fps} FPS).`
+        );
+    }
+
+    // --------------------------------------------------
+    // Execution & Real-Time Polling / Cancellation
+    // --------------------------------------------------
+
+    function setRunningUI(running, isVideo) {
+        isRunning = running;
+        el.analyzeButton.disabled = running || !selectedFile;
+        el.modelSelect.disabled = running;
+        el.yoloToggle.disabled = running;
+        el.videoModeSelect.disabled = running;
+
+        if (running && isVideo) {
+            el.analyzeButton.textContent = "Processing...";
+            el.cancelButton.classList.remove("hidden");
+            el.cancelButton.disabled = false;
+            el.cancelButton.textContent = "Cancel Processing";
+            el.videoProgressPanel.classList.remove("hidden");
+        } else if (running) {
+            el.analyzeButton.textContent = "Analyzing...";
+            el.cancelButton.classList.add("hidden");
+            el.videoProgressPanel.classList.add("hidden");
+        } else {
+            el.analyzeButton.textContent = "Analyze Scene";
+            el.cancelButton.classList.add("hidden");
+        }
+    }
+
+    function updateProgressDisplay(status) {
+        const pct = Math.max(0, Math.min(100, Number(status.percent) || 0));
+        el.progressBar.style.width = `${pct}%`;
+        el.progressPercent.textContent = `${pct.toFixed(1)}%`;
+
+        const modeName = status.mode_label || "Video";
+        const dev = status.device || "GPU";
+        el.progressStatusLabel.textContent =
+            status.status === "cancelling"
+                ? "Cancelling and cleaning up..."
+                : `${modeName} · Running on ${dev}`;
+
+        const total = status.total_frames || 0;
+        const done = status.processed_frames || 0;
+        const analyzed = status.analyzed_frames || 0;
+        el.progressFrames.textContent =
+            total > 0
+                ? `${done} / ${total} frames (${analyzed} analyzed)`
+                : `${done} frames (${analyzed} analyzed)`;
+
+        el.progressFps.textContent = `${(Number(status.current_fps) || 0).toFixed(1)} FPS`;
+        el.progressElapsed.textContent = `Elapsed: ${formatSeconds(status.elapsed_seconds || 0)}`;
+        el.progressEta.textContent =
+            status.eta_seconds !== null && status.eta_seconds !== undefined
+                ? `ETA: ${formatSeconds(status.eta_seconds)}`
+                : "ETA: --";
+    }
+
+    function stopPolling() {
+        if (pollTimer) {
+            clearInterval(pollTimer);
+            pollTimer = null;
+        }
+    }
+
+    el.cancelButton.addEventListener("click", async () => {
+        if (!activeJobId) return;
+        el.cancelButton.disabled = true;
+        el.cancelButton.textContent = "Cancelling...";
+        try {
+            await fetch(`/api/video-cancel/${activeJobId}`, { method: "POST" });
+        } catch (err) {}
+    });
+
+    async function runVideoAsync(formData, useYolo) {
+        updateProgressDisplay({
+            status: "running",
+            mode_label: el.videoModeSelect.options[el.videoModeSelect.selectedIndex].text.split(" (")[0],
+            device: el.deviceBadge.textContent.startsWith("GPU") ? "GPU" : "CPU",
+            percent: 0,
+            total_frames: 0,
+            processed_frames: 0,
+            analyzed_frames: 0,
+            current_fps: 0,
+            elapsed_seconds: 0,
+            eta_seconds: null
+        });
+
+        const startResp = await fetch("/api/analyze-video/start", {
+            method: "POST",
+            body: formData
+        });
+        const startData = await startResp.json();
+        if (!startResp.ok || startData.error) {
+            throw new Error(startData.error || "Failed to start video processing.");
+        }
+
+        activeJobId = startData.job_id;
+
+        return new Promise((resolve, reject) => {
+            const pollOnce = async () => {
+                if (!activeJobId) return;
+                try {
+                    const stResp = await fetch(`/api/video-status/${activeJobId}`);
+                    const st = await stResp.json();
+                    if (!stResp.ok) {
+                        stopPolling();
+                        reject(new Error(st.error || "Lost job status."));
+                        return;
+                    }
+
+                    updateProgressDisplay(st);
+
+                    if (st.status === "completed") {
+                        stopPolling();
+                        activeJobId = null;
+                        renderVideoCompleted(st.result, useYolo);
+                        resolve();
+                    } else if (st.status === "cancelled") {
+                        stopPolling();
+                        activeJobId = null;
+                        el.videoOutputPreview.innerHTML = "";
+                        el.videoOutputPreview.appendChild(makePlaceholder("Processing cancelled"));
+                        showNotice("Video processing was cancelled and temporary files were cleaned up.");
+                        resolve();
+                    } else if (st.status === "error") {
+                        stopPolling();
+                        activeJobId = null;
+                        reject(new Error(st.error || "Video processing failed."));
+                    }
+                } catch (err) {
+                    stopPolling();
+                    activeJobId = null;
+                    reject(err);
+                }
+            };
+
+            pollTimer = setInterval(pollOnce, 250);
+            pollOnce();
+        });
+    }
+
     el.analyzeButton.addEventListener("click", async () => {
         if (isRunning) return;
         if (!selectedFile || !selectedKind) {
@@ -363,72 +652,45 @@
         }
 
         hideNotice();
-        isRunning = true;
-        el.analyzeButton.disabled = true;
-        el.analyzeButton.textContent = selectedKind === "video" ? "Processing video..." : "Analyzing...";
+        const isVideo = selectedKind === "video";
+        const useYolo = el.yoloToggle.checked;
 
         const formData = new FormData();
         formData.append("file", selectedFile);
         formData.append("model", el.modelSelect.value);
-        formData.append("use_yolo", String(el.yoloToggle.checked));
+        formData.append("use_yolo", String(useYolo));
+        if (isVideo) {
+            formData.append("mode", el.videoModeSelect.value);
+        }
 
-        const endpoint = selectedKind === "video" ? "/api/analyze-video" : "/api/analyze";
-        const useYolo = el.yoloToggle.checked;
+        setRunningUI(true, isVideo);
 
         try {
-            const response = await fetch(endpoint, {
-                method: "POST",
-                body: formData
-            });
-
-            const raw = await response.text();
-            let data;
-            try {
-                data = JSON.parse(raw);
-            } catch (err) {
-                throw new Error("Server returned an unexpected response. Check the Flask terminal.");
-            }
-
-            if (!response.ok || data.error) {
-                throw new Error(data.error || "Analysis failed.");
-            }
-
-            const modelLabel = MODEL_NAMES[data.model] || data.model;
-
-            if (selectedKind === "video") {
-                el.imageResultsGrid.classList.add("hidden");
-                el.videoResultsGrid.classList.remove("hidden");
-                el.videoCodecNotice.classList.add("hidden");
-
-                el.resultMeta.textContent = `${modelLabel} · ${data.frames_processed} frames · ${data.original_fps} fps`;
-
-                el.videoOutputPreview.innerHTML = "";
-                const outVideo = document.createElement("video");
-                outVideo.src = data.video;
-                outVideo.controls = true;
-                outVideo.playsInline = true;
-                outVideo.addEventListener("error", () => {
-                    el.videoCodecNotice.classList.remove("hidden");
-                });
-                el.videoOutputPreview.appendChild(outVideo);
-
-                el.downloadVideoLink.href = data.video;
-                el.downloadVideoLink.classList.remove("hidden");
-
-                const counts = data.detection_counts || {};
-                el.totalLabel.textContent = "Frame Detections";
-                el.totalObjects.textContent = useYolo ? String(data.total_detections ?? 0) : "Off";
-                el.carCount.textContent = useYolo ? String(getCount(counts, "car")) : "--";
-                el.personCount.textContent = useYolo ? String(getCount(counts, "person")) : "--";
-                el.processingTime.textContent = `${data.processing_time} s`;
-
-                renderDetectedTags(counts, useYolo);
-                renderClassChart([]);
+            if (isVideo) {
+                await runVideoAsync(formData, useYolo);
             } else {
+                const response = await fetch("/api/analyze", {
+                    method: "POST",
+                    body: formData
+                });
+                const raw = await response.text();
+                let data;
+                try {
+                    data = JSON.parse(raw);
+                } catch (err) {
+                    throw new Error("Server returned an unexpected response.");
+                }
+                if (!response.ok || data.error) {
+                    throw new Error(data.error || "Image analysis failed.");
+                }
+
+                const modelLabel = MODEL_NAMES[data.model] || data.model;
                 el.videoResultsGrid.classList.add("hidden");
                 el.imageResultsGrid.classList.remove("hidden");
+                el.videoFrameBreakdown.classList.add("hidden");
+                el.summaryScopeNote.textContent = "";
 
-                el.resultMeta.textContent = `${modelLabel} · ${data.image_width}×${data.image_height}`;
+                el.resultMeta.textContent = `${modelLabel} · ${data.device} · ${data.image_width}×${data.image_height}`;
 
                 el.originalPreview.innerHTML = "";
                 const origImg = document.createElement("img");
@@ -455,21 +717,24 @@
                 const counts = data.object_counts || {};
                 el.totalLabel.textContent = "Total Objects";
                 el.totalObjects.textContent = useYolo ? String(data.total_objects ?? 0) : "Off";
+                el.totalSub.textContent = "";
                 el.carCount.textContent = useYolo ? String(getCount(counts, "car")) : "--";
+                el.carSub.textContent = "";
                 el.personCount.textContent = useYolo ? String(getCount(counts, "person")) : "--";
+                el.personSub.textContent = "";
                 el.processingTime.textContent = `${data.processing_time} s`;
+                el.processingSub.textContent = data.device || "";
 
                 renderDetectedTags(counts, useYolo);
-                renderClassChart(data.class_distribution || []);
+                renderClassChart(data.class_distribution || [], false);
+                showNotice(`Finished analyzing with ${modelLabel} on ${data.device} in ${data.processing_time}s.`);
             }
-
-            showNotice(`Finished analyzing with ${modelLabel} in ${data.processing_time} seconds.`);
         } catch (err) {
             showNotice(err.message || "Analysis failed.", true);
         } finally {
-            isRunning = false;
-            el.analyzeButton.disabled = !selectedFile;
-            el.analyzeButton.textContent = "Analyze Scene";
+            setRunningUI(false, isVideo);
         }
     });
+
+    loadSystemInfo();
 })();

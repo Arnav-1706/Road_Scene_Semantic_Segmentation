@@ -1,0 +1,34 @@
+{
+  "device": "CPU (native Windows TF + CPU PyTorch)",
+  "warmed_single_frame_sec": {
+    "unet_predict": 30.529,
+    "deeplab_infer": 0.838,
+    "yolo_predict": 0.061
+  },
+  "video_benchmarks": {
+    "deeplab_90f": {
+      "model": "deeplab",
+      "video": "test_road_720p_90f.mp4",
+      "frames_processed": 90,
+      "total_time_sec": 85.727,
+      "api_reported_time_sec": 85.61,
+      "processing_fps": 1.05,
+      "ram_mb_after": 1864.3,
+      "vram_mb_after": 1769.7,
+      "detections": 0
+    },
+    "unet_5f": {
+      "model": "unet",
+      "video": "test_road_720p_5f.mp4",
+      "frames_processed": 5,
+      "total_time_sec": 190.087,
+      "api_reported_time_sec": 190.08,
+      "processing_fps": 0.026,
+      "ram_mb_after": 1872.8,
+      "vram_mb_after": 1629.8,
+      "detections": 0
+    }
+  },
+  "process_ram_mb": 1872.8,
+  "system_vram_used_mb": 1629.8
+}

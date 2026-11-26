@@ -17,11 +17,14 @@
     <header class="site-header">
         <div class="header-inner">
             <a href="#upload" class="site-title">Road Scene Analysis</a>
-            <nav class="site-nav" aria-label="Page sections">
-                <a href="#upload">Upload</a>
-                <a href="#results">Results</a>
-                <a href="#summary">Summary</a>
-            </nav>
+            <div class="header-right">
+                <nav class="site-nav" aria-label="Page sections">
+                    <a href="#upload">Upload</a>
+                    <a href="#results">Results</a>
+                    <a href="#summary">Summary</a>
+                </nav>
+                <span class="device-badge" id="deviceBadge" title="Active compute hardware">Checking device...</span>
+            </div>
         </div>
     </header>
 
@@ -46,6 +49,7 @@
                         <option value="unet">U-Net</option>
                         <option value="deeplab">DeepLabV3+</option>
                     </select>
+                    <p class="control-hint" id="modelRecommendation"></p>
                 </div>
 
                 <div class="control-group">
@@ -54,6 +58,16 @@
                         <input type="checkbox" id="yoloToggle" checked>
                         <span>Include YOLOv8 bounding boxes</span>
                     </label>
+                </div>
+
+                <div class="control-group">
+                    <label for="videoModeSelect">Video Processing Mode</label>
+                    <select id="videoModeSelect">
+                        <option value="high">High Quality (Every frame)</option>
+                        <option value="balanced" selected>Balanced (Every 3rd frame · Default)</option>
+                        <option value="fast">Fast (Every 5th frame)</option>
+                    </select>
+                    <p class="control-hint" id="videoModeHint">Balanced reuses recent predictions on intermediate frames without inflating counts.</p>
                 </div>
             </div>
 
@@ -84,7 +98,25 @@
             </div>
 
             <div class="submit-row">
+                <button type="button" class="btn-outline hidden" id="cancelButton">Cancel Processing</button>
                 <button type="button" class="btn-primary" id="analyzeButton" disabled>Analyze Scene</button>
+            </div>
+
+            <!-- Real-time Video Progress Panel -->
+            <div class="progress-panel hidden" id="videoProgressPanel" aria-live="polite">
+                <div class="progress-top">
+                    <strong id="progressStatusLabel">Processing video...</strong>
+                    <span id="progressPercent">0.0%</span>
+                </div>
+                <div class="progress-track">
+                    <div class="progress-bar" id="progressBar" style="width: 0%;"></div>
+                </div>
+                <div class="progress-stats">
+                    <span id="progressFrames">0 / 0 frames (0 analyzed)</span>
+                    <span id="progressFps">0.0 FPS</span>
+                    <span id="progressElapsed">Elapsed: 0.0s</span>
+                    <span id="progressEta">ETA: --</span>
+                </div>
             </div>
         </section>
 
@@ -147,34 +179,46 @@
         <section class="card" id="summary">
             <div class="card-head">
                 <h2>Scene Summary</h2>
+                <span class="card-note" id="summaryScopeNote"></span>
             </div>
 
             <div class="stats-row">
                 <div class="stat-box">
                     <span class="stat-label" id="totalLabel">Total Objects</span>
                     <strong class="stat-value" id="totalObjects">--</strong>
+                    <span class="stat-sub" id="totalSub"></span>
                 </div>
                 <div class="stat-box">
                     <span class="stat-label">Cars</span>
                     <strong class="stat-value" id="carCount">--</strong>
+                    <span class="stat-sub" id="carSub"></span>
                 </div>
                 <div class="stat-box">
                     <span class="stat-label">Persons</span>
                     <strong class="stat-value" id="personCount">--</strong>
+                    <span class="stat-sub" id="personSub"></span>
                 </div>
                 <div class="stat-box">
                     <span class="stat-label">Processing Time</span>
                     <strong class="stat-value" id="processingTime">--</strong>
+                    <span class="stat-sub" id="processingSub"></span>
                 </div>
+            </div>
+
+            <div class="video-frame-breakdown hidden" id="videoFrameBreakdown">
+                <span id="breakdownTotal">Total Frames: --</span>
+                <span id="breakdownAnalyzed">Analyzed Frames: --</span>
+                <span id="breakdownReused">Reused Predictions: --</span>
+                <span id="breakdownSpeed">Speed: --</span>
             </div>
 
             <div class="detected-tags hidden" id="detectedTags"></div>
 
             <div class="chart-section" id="chartSection">
-                <h3>Class Coverage</h3>
+                <h3 id="chartTitle">Class Coverage</h3>
                 <div class="chart-box">
                     <canvas id="classChart"></canvas>
-                    <p class="chart-empty" id="chartEmpty">Run an image analysis to view semantic class percentages.</p>
+                    <p class="chart-empty" id="chartEmpty">Run an analysis to view semantic class percentages.</p>
                 </div>
             </div>
         </section>
