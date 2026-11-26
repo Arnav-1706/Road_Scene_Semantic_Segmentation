@@ -1,0 +1,191 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Road Scene Analysis</title>
+
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600;700&family=Lora:wght@600;700&display=swap" rel="stylesheet">
+
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+
+<body>
+    <header class="site-header">
+        <div class="header-inner">
+            <a href="#upload" class="site-title">Road Scene Analysis</a>
+            <nav class="site-nav" aria-label="Page sections">
+                <a href="#upload">Upload</a>
+                <a href="#results">Results</a>
+                <a href="#summary">Summary</a>
+            </nav>
+        </div>
+    </header>
+
+    <main class="page">
+        <section class="intro" id="upload">
+            <h1>Road Scene Segmentation</h1>
+            <p>Upload a street image or dashcam clip to generate a semantic mask and detect vehicles and pedestrians.</p>
+        </section>
+
+        <!-- Error / Status Notice -->
+        <div class="notice hidden" id="noticeBar" role="alert">
+            <span id="noticeText"></span>
+            <button type="button" class="notice-close" id="noticeClose" aria-label="Dismiss">&times;</button>
+        </div>
+
+        <!-- Upload & Options Card -->
+        <section class="card">
+            <div class="controls-row">
+                <div class="control-group">
+                    <label for="modelSelect">Model</label>
+                    <select id="modelSelect">
+                        <option value="unet">U-Net</option>
+                        <option value="deeplab">DeepLabV3+</option>
+                    </select>
+                </div>
+
+                <div class="control-group">
+                    <label>Object Detection</label>
+                    <label class="checkbox-row" for="yoloToggle">
+                        <input type="checkbox" id="yoloToggle" checked>
+                        <span>Include YOLOv8 bounding boxes</span>
+                    </label>
+                </div>
+            </div>
+
+            <div class="drop-area" id="uploadArea" tabindex="0" role="button" aria-label="Choose image or video file">
+                <input
+                    type="file"
+                    id="fileInput"
+                    accept=".jpg,.jpeg,.png,.mp4,.avi,.mov,image/jpeg,image/png,video/mp4,video/avi,video/x-msvideo,video/quicktime"
+                    hidden
+                >
+
+                <div class="drop-prompt" id="dropPrompt">
+                    <p class="drop-title">Drop an image or video here, or browse from your computer</p>
+                    <p class="drop-hint">JPG, PNG, MP4, AVI, or MOV</p>
+                    <button type="button" class="btn-outline" id="uploadButton">Choose File</button>
+                </div>
+
+                <div class="file-chosen hidden" id="fileChosen">
+                    <div class="file-chosen-info">
+                        <strong id="fileName">No file selected</strong>
+                        <span id="fileMeta"></span>
+                    </div>
+                    <div class="file-chosen-actions">
+                        <button type="button" class="btn-link" id="changeFileButton">Change</button>
+                        <button type="button" class="btn-link muted" id="clearFileButton">Remove</button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="submit-row">
+                <button type="button" class="btn-primary" id="analyzeButton" disabled>Analyze Scene</button>
+            </div>
+        </section>
+
+        <!-- Visual Results -->
+        <section class="card" id="results">
+            <div class="card-head">
+                <h2>Results</h2>
+                <span class="card-note" id="resultMeta"></span>
+            </div>
+
+            <!-- Image Output Grid -->
+            <div class="results-grid" id="imageResultsGrid">
+                <figure class="output-frame">
+                    <figcaption>Original</figcaption>
+                    <div class="frame-box" id="originalPreview">
+                        <span class="placeholder-text">No file uploaded</span>
+                    </div>
+                </figure>
+
+                <figure class="output-frame">
+                    <figcaption>Segmentation</figcaption>
+                    <div class="frame-box" id="segmentationPreview">
+                        <span class="placeholder-text">Waiting for analysis</span>
+                    </div>
+                </figure>
+
+                <figure class="output-frame">
+                    <figcaption>Object Detection</figcaption>
+                    <div class="frame-box" id="detectionPreview">
+                        <span class="placeholder-text">Waiting for analysis</span>
+                    </div>
+                </figure>
+            </div>
+
+            <!-- Video Output Grid -->
+            <div class="video-results-grid hidden" id="videoResultsGrid">
+                <figure class="output-frame">
+                    <figcaption>Original Video</figcaption>
+                    <div class="frame-box" id="videoOriginalPreview">
+                        <span class="placeholder-text">No video uploaded</span>
+                    </div>
+                </figure>
+
+                <figure class="output-frame">
+                    <figcaption class="figcaption-row">
+                        <span>Processed Video</span>
+                        <a id="downloadVideoLink" class="btn-link hidden" download>Download MP4</a>
+                    </figcaption>
+                    <div class="frame-box" id="videoOutputPreview">
+                        <span class="placeholder-text">Waiting for analysis</span>
+                    </div>
+                    <p class="codec-note hidden" id="videoCodecNotice">
+                        Your browser cannot play the mp4v stream inline. Use <strong>Download MP4</strong> above to open it locally.
+                    </p>
+                </figure>
+            </div>
+        </section>
+
+        <!-- Summary & Chart -->
+        <section class="card" id="summary">
+            <div class="card-head">
+                <h2>Scene Summary</h2>
+            </div>
+
+            <div class="stats-row">
+                <div class="stat-box">
+                    <span class="stat-label" id="totalLabel">Total Objects</span>
+                    <strong class="stat-value" id="totalObjects">--</strong>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">Cars</span>
+                    <strong class="stat-value" id="carCount">--</strong>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">Persons</span>
+                    <strong class="stat-value" id="personCount">--</strong>
+                </div>
+                <div class="stat-box">
+                    <span class="stat-label">Processing Time</span>
+                    <strong class="stat-value" id="processingTime">--</strong>
+                </div>
+            </div>
+
+            <div class="detected-tags hidden" id="detectedTags"></div>
+
+            <div class="chart-section" id="chartSection">
+                <h3>Class Coverage</h3>
+                <div class="chart-box">
+                    <canvas id="classChart"></canvas>
+                    <p class="chart-empty" id="chartEmpty">Run an image analysis to view semantic class percentages.</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer class="site-footer">
+        <p>Road Scene Segmentation &middot; U-Net, DeepLabV3+ &amp; YOLOv8</p>
+    </footer>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+
+</html>
